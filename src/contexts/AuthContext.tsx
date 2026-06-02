@@ -29,20 +29,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       console.log("📍 Buscando username para userId:", userId);
       // Query à tabela user_profiles com RLS ativa
-      // Se o usuário não tiver permissão (RLS), error será retornado
+      // Usando .maybeSingle() em vez de .single() para evitar erro 406
+      // .maybeSingle() retorna null se não encontrar em vez de erro
       const { data, error } = await supabase
         .from("user_profiles")
         .select("username")
         .eq("id", userId)
-        .single(); // .single() retorna um objeto, não um array
+        .maybeSingle(); // .maybeSingle() retorna null se não encontrar, em vez de erro
       
       if (error) {
         console.error("❌ Erro ao buscar username:", error.message, error.code);
-        console.log("Tentando novamente com timeout...");
-        // Retry após 1 segundo
-        setTimeout(() => {
-          fetchUsername(userId);
-        }, 1000);
         setUsername(null);
         return;
       }
@@ -52,9 +48,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         console.log("✅ Username encontrado:", data.username);
         setUsername(data.username);
       } else {
-        console.log("⚠️ Nenhum username encontrado para este usuário");
-        console.log("Dados da resposta:", data);
-        setUsername(null);
+        console.log("⚠️ Nenhum username encontrado para este usuário, criando perfil padrão...");
+        // Se não existir perfil, criar um com "usuario" como padrão
+        const { error: insertError } = await supabase
+          .from("user_profiles")
+          .insert({
+            id: userId,
+            username: "usuario",
+          });
+        
+        if (insertError) {
+          console.error("❌ Erro ao criar perfil padrão:", insertError.message);
+        } else {
+          console.log("✅ Perfil padrão criado com username: usuario");
+          setUsername("usuario");
+        }
       }
     } catch (error) {
       console.error("❌ Exceção ao buscar username:", error);

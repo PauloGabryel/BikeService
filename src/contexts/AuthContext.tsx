@@ -148,47 +148,53 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   // Registra um novo usuário com email, senha e username
-  // Fluxo: 1) Criar usuário no auth 2) Inserir perfil em user_profiles 3) Atualizar contexto
+  // IMPORTANTE: O perfil é criado automaticamente por um trigger no Supabase
+  // Este código apenas busca e atualiza o username no contexto local
   const signUp = async (email: string, password: string, username: string) => {
     // Etapa 1: Criar usuário no Supabase Auth
     const { data, error } = await supabase.auth.signUp({ email, password });
     if (error) return { error: error.message };
 
-    // Etapa 2: Se signup bem-sucedido, criar registro na tabela user_profiles
+    // Etapa 2: Aguardar um momento para o trigger criar o perfil
     if (data.user?.id) {
       console.log("✅ Usuário criado no Auth com ID:", data.user.id);
-      console.log("📝 Criando perfil com username:", username);
+      console.log("📝 Username fornecido:", username);
       
-      // Usar upsert para garantir que o username correto seja salvo
-      const { error: profileError } = await supabase
-        .from("user_profiles")
-        .upsert({
-          id: data.user.id,
-          username: username,
-        }, {
-          onConflict: "id",
-        });
-
-      if (profileError) {
-        console.error("❌ Erro ao criar perfil:", profileError);
-        setUsername(null);
-      } else {
-        // Etapa 3: Verificar que o perfil foi criado com sucesso
-        const { data: verifyData } = await supabase
+      // Aguardar o trigger criar o perfil (max 2 segundos)
+      let profileCreated = false;
+      for (let i = 0; i < 20; i++) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        const { data: profileData } = await supabase
           .from("user_profiles")
-          .select("username")
+          .select("id")
           .eq("id", data.user.id)
           .maybeSingle();
         
-        if (verifyData?.username === username) {
-          console.log("✅ Perfil verificado com username:", username);
-          setUsername(username);
-          // Definir lock para evitar que onAuthStateChange busque novamente
-          fetchingUserIdRef.current = data.user.id;
-        } else {
-          console.log("⚠️ Perfil criado mas username não corresponde");
-          setUsername(null);
+        if (profileData) {
+          profileCreated = true;
+          console.log("✅ Perfil criado pelo trigger");
+          break;
         }
+      }
+      
+      if (profileCreated) {
+        // Agora atualizar o username com o valor correto
+        const { error: updateError } = await supabase
+          .from("user_profiles")
+          .update({ username: username })
+          .eq("id", data.user.id);
+        
+        if (updateError) {
+          console.error("❌ Erro ao atualizar username:", updateError);
+          setUsername(null);
+        } else {
+          console.log("✅ Username atualizado para:", username);
+          setUsername(username);
+          fetchingUserIdRef.current = data.user.id;
+        }
+      } else {
+        console.error("❌ Timeout aguardando perfil ser criado pelo trigger");
       }
     }
 

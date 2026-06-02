@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, { createContext, useContext, useEffect, useState, useRef } from "react";
 import type { User, Session } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 
@@ -22,24 +22,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [username, setUsername] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  
+  // Lock para evitar múltiplas chamadas simultâneas de fetchUsername
+  const fetchingUserIdRef = useRef<string | null>(null);
 
   // Função para buscar o username do usuário a partir da tabela user_profiles
   // Chamada após login bem-sucedido ou ao inicializar o contexto
   const fetchUsername = async (userId: string) => {
     try {
+      // Evitar múltiplas chamadas simultâneas para o mesmo userId
+      if (fetchingUserIdRef.current === userId) {
+        console.log("⏳ Já está buscando username para userId:", userId);
+        return;
+      }
+      
+      fetchingUserIdRef.current = userId;
       console.log("📍 Buscando username para userId:", userId);
+      
       // Query à tabela user_profiles com RLS ativa
-      // Usando .maybeSingle() em vez de .single() para evitar erro 406
-      // .maybeSingle() retorna null se não encontrar em vez de erro
       const { data, error } = await supabase
         .from("user_profiles")
         .select("username")
         .eq("id", userId)
-        .maybeSingle(); // .maybeSingle() retorna null se não encontrar, em vez de erro
+        .maybeSingle();
       
       if (error) {
         console.error("❌ Erro ao buscar username:", error.message, error.code);
         setUsername(null);
+        fetchingUserIdRef.current = null;
         return;
       }
       
@@ -52,27 +62,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // Gerar um username único baseado no userId para evitar conflito de constraint UNIQUE
         const defaultUsername = `usuario_${userId.substring(0, 8)}`;
         
-        // Se não existir perfil, usar upsert para evitar conflito de chave duplicada
+        // Se não existir perfil, usar upsert para evitar conflito
         const { error: upsertError } = await supabase
           .from("user_profiles")
           .upsert({
             id: userId,
             username: defaultUsername,
           }, {
-            onConflict: "id", // Se o id já existir, ignora
+            onConflict: "id",
           });
         
         if (upsertError) {
           console.error("❌ Erro ao criar perfil padrão:", upsertError.message);
           setUsername(null);
         } else {
-          console.log("✅ Perfil padrão criado/verificado com username:", defaultUsername);
+          console.log("✅ Perfil padrão criado com username:", defaultUsername);
           setUsername(defaultUsername);
         }
       }
     } catch (error) {
       console.error("❌ Exceção ao buscar username:", error);
       setUsername(null);
+    } finally {
+      // Liberar o lock
+      fetchingUserIdRef.current = null;
     }
   };
 
@@ -88,15 +101,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange(async (_event, session) => {
       setSession(session);
       setUser(session?.user ?? null);
+      
       if (session?.user?.id) {
-        fetchUsername(session.user.id);
+        // Verificar se o usuário ainda existe no banco de dados
+        // Se foi deletado, fazer logout automático
+        const { data: profileExists } = await supabase
+          .from("user_profiles")
+          .select("id")
+          .eq("id", session.user.id)
+          .maybeSingle();
+        
+        if (!profileExists) {
+          console.warn("⚠️ Usuário foi deletado do banco, fazendo logout...");
+          // Usuário foi deletado, fazer logout
+          await supabase.auth.signOut();
+          setUsername(null);
+          setLoading(false);
+        } else {
+          // Usuário ainda existe, buscar username
+          fetchUsername(session.user.id);
+          setLoading(false);
+        }
       } else {
         setUsername(null);
+        setLoading(false);
       }
-      setLoading(false);
     });
 
     return () => subscription.unsubscribe();

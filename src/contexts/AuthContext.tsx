@@ -124,19 +124,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     // Etapa 2: Se signup bem-sucedido, criar registro na tabela user_profiles
     if (data.user?.id) {
+      // Usar upsert para garantir que o username correto seja salvo
       const { error: profileError } = await supabase
         .from("user_profiles")
-        .insert({
+        .upsert({
           id: data.user.id, // Chave estrangeira que referencia auth.users.id
           username: username,
+        }, {
+          onConflict: "id",
         });
 
       if (profileError) {
         console.error("Erro ao criar perfil:", profileError);
         // IMPORTANTE: Não retornamos erro aqui pois o usuário JÁ foi criado no auth
         // Assim, o usuário pode fazer login e completar o perfil depois se necessário
+        setUsername(null);
       } else {
-        // Etapa 3: Atualizar contexto local com o username
+        // Etapa 3: Atualizar contexto local com o username IMEDIATAMENTE
+        // Isso previne que fetchUsername crie um perfil padrão
+        console.log("✅ Perfil criado com username:", username);
         setUsername(username);
       }
     }

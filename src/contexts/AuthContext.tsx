@@ -156,26 +156,39 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     // Etapa 2: Se signup bem-sucedido, criar registro na tabela user_profiles
     if (data.user?.id) {
+      console.log("✅ Usuário criado no Auth com ID:", data.user.id);
+      console.log("📝 Criando perfil com username:", username);
+      
       // Usar upsert para garantir que o username correto seja salvo
       const { error: profileError } = await supabase
         .from("user_profiles")
         .upsert({
-          id: data.user.id, // Chave estrangeira que referencia auth.users.id
+          id: data.user.id,
           username: username,
         }, {
           onConflict: "id",
         });
 
       if (profileError) {
-        console.error("Erro ao criar perfil:", profileError);
-        // IMPORTANTE: Não retornamos erro aqui pois o usuário JÁ foi criado no auth
-        // Assim, o usuário pode fazer login e completar o perfil depois se necessário
+        console.error("❌ Erro ao criar perfil:", profileError);
         setUsername(null);
       } else {
-        // Etapa 3: Atualizar contexto local com o username IMEDIATAMENTE
-        // Isso previne que fetchUsername crie um perfil padrão
-        console.log("✅ Perfil criado com username:", username);
-        setUsername(username);
+        // Etapa 3: Verificar que o perfil foi criado com sucesso
+        const { data: verifyData } = await supabase
+          .from("user_profiles")
+          .select("username")
+          .eq("id", data.user.id)
+          .maybeSingle();
+        
+        if (verifyData?.username === username) {
+          console.log("✅ Perfil verificado com username:", username);
+          setUsername(username);
+          // Definir lock para evitar que onAuthStateChange busque novamente
+          fetchingUserIdRef.current = data.user.id;
+        } else {
+          console.log("⚠️ Perfil criado mas username não corresponde");
+          setUsername(null);
+        }
       }
     }
 

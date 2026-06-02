@@ -91,16 +91,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) return { error: error.message };
-    
-    // Buscar o username após o login bem-sucedido
-    const { data } = await supabase.auth.getSession();
-    if (data.session?.user?.id) {
-      fetchUsername(data.session.user.id);
+    try {
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) return { error: error.message };
+      
+      // Verificar se o perfil existe
+      const { data: session } = await supabase.auth.getSession();
+      if (session?.session?.user?.id) {
+        const { data: profile, error: profileError } = await supabase
+          .from("user_profiles")
+          .select("id")
+          .eq("id", session.session.user.id)
+          .maybeSingle();
+        
+        if (profileError || !profile) {
+          // Perfil não encontrado, fazer logout
+          await supabase.auth.signOut();
+          setUsername(null);
+          return { error: "Nenhuma conta encontrada no banco de dados" };
+        }
+        
+        // Perfil existe, buscar username
+        fetchUsername(session.session.user.id);
+      }
+      
+      return { error: null };
+    } catch (error) {
+      console.error("❌ Erro ao fazer login:", error);
+      return { error: "Erro ao fazer login" };
     }
-    
-    return { error: null };
   };
 
   // Registra um novo usuário com email, senha e username

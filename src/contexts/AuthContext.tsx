@@ -26,20 +26,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Lock para evitar múltiplas chamadas simultâneas de fetchUsername
   const fetchingUserIdRef = useRef<string | null>(null);
 
-  // Função para buscar o username do usuário a partir da tabela user_profiles
-  // Chamada após login bem-sucedido ou ao inicializar o contexto
+  // Função para buscar o username do usuário
   const fetchUsername = async (userId: string) => {
     try {
-      // Evitar múltiplas chamadas simultâneas para o mesmo userId
+      // Evitar múltiplas chamadas simultâneas
       if (fetchingUserIdRef.current === userId) {
-        console.log("⏳ Já está buscando username para userId:", userId);
+        console.log("⏳ Já está buscando username para:", userId);
         return;
       }
       
       fetchingUserIdRef.current = userId;
       console.log("📍 Buscando username para userId:", userId);
       
-      // Query à tabela user_profiles com RLS ativa
       const { data, error } = await supabase
         .from("user_profiles")
         .select("username")
@@ -47,44 +45,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         .maybeSingle();
       
       if (error) {
-        console.error("❌ Erro ao buscar username:", error.message, error.code);
+        console.error("❌ Erro ao buscar username:", error.message);
         setUsername(null);
-        fetchingUserIdRef.current = null;
-        return;
-      }
-      
-      console.log("📦 Dados retornados:", data);
-      if (data?.username) {
+      } else if (data?.username) {
         console.log("✅ Username encontrado:", data.username);
         setUsername(data.username);
       } else {
-        console.log("⚠️ Nenhum username encontrado para este usuário, criando perfil padrão...");
-        // Gerar um username único baseado no userId para evitar conflito de constraint UNIQUE
-        const defaultUsername = `usuario_${userId.substring(0, 8)}`;
-        
-        // Se não existir perfil, usar upsert para evitar conflito
-        const { error: upsertError } = await supabase
-          .from("user_profiles")
-          .upsert({
-            id: userId,
-            username: defaultUsername,
-          }, {
-            onConflict: "id",
-          });
-        
-        if (upsertError) {
-          console.error("❌ Erro ao criar perfil padrão:", upsertError.message);
-          setUsername(null);
-        } else {
-          console.log("✅ Perfil padrão criado com username:", defaultUsername);
-          setUsername(defaultUsername);
-        }
+        console.log("⚠️ Nenhum username encontrado");
+        setUsername(null);
       }
     } catch (error) {
       console.error("❌ Exceção ao buscar username:", error);
       setUsername(null);
     } finally {
-      // Liberar o lock
       fetchingUserIdRef.current = null;
     }
   };
@@ -101,34 +74,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
       setUser(session?.user ?? null);
       
       if (session?.user?.id) {
-        // Verificar se o usuário ainda existe no banco de dados
-        // Se foi deletado, fazer logout automático
-        const { data: profileExists } = await supabase
-          .from("user_profiles")
-          .select("id")
-          .eq("id", session.user.id)
-          .maybeSingle();
-        
-        if (!profileExists) {
-          console.warn("⚠️ Usuário foi deletado do banco, fazendo logout...");
-          // Usuário foi deletado, fazer logout
-          await supabase.auth.signOut();
-          setUsername(null);
-          setLoading(false);
-        } else {
-          // Usuário ainda existe, buscar username
-          fetchUsername(session.user.id);
-          setLoading(false);
-        }
+        fetchUsername(session.user.id);
       } else {
         setUsername(null);
-        setLoading(false);
       }
+      
+      setLoading(false);
     });
 
     return () => subscription.unsubscribe();
@@ -148,56 +104,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   // Registra um novo usuário com email, senha e username
-  // IMPORTANTE: O perfil é criado automaticamente por um trigger no Supabase
-  // Este código apenas busca e atualiza o username no contexto local
   const signUp = async (email: string, password: string, username: string) => {
-    // Etapa 1: Criar usuário no Supabase Auth
-    const { data, error } = await supabase.auth.signUp({ email, password });
-    if (error) return { error: error.message };
+    try {
+      // Criar usuário no Supabase Auth
+      const { data, error } = await supabase.auth.signUp({ email, password });
+      if (error) return { error: error.message };
 
-    // Etapa 2: Aguardar um momento para o trigger criar o perfil
-    if (data.user?.id) {
-      console.log("✅ Usuário criado no Auth com ID:", data.user.id);
-      console.log("📝 Username fornecido:", username);
-      
-      // Aguardar o trigger criar o perfil (max 2 segundos)
-      let profileCreated = false;
-      for (let i = 0; i < 20; i++) {
-        await new Promise(resolve => setTimeout(resolve, 100));
+      if (data.user?.id) {
+        console.log("✅ Usuário criado:", data.user.id);
         
-        const { data: profileData } = await supabase
+        // Inserir perfil com username fornecido
+        const { error: profileError } = await supabase
           .from("user_profiles")
-          .select("id")
-          .eq("id", data.user.id)
-          .maybeSingle();
-        
-        if (profileData) {
-          profileCreated = true;
-          console.log("✅ Perfil criado pelo trigger");
-          break;
+          .insert({
+            id: data.user.id,
+            username: username,
+          });
+
+        if (profileError) {
+          console.error("❌ Erro ao inserir perfil:", profileError.message);
+          return { error: "Erro ao criar perfil" };
         }
-      }
-      
-      if (profileCreated) {
-        // Agora atualizar o username com o valor correto
-        const { error: updateError } = await supabase
-          .from("user_profiles")
-          .update({ username: username })
-          .eq("id", data.user.id);
         
-        if (updateError) {
-          console.error("❌ Erro ao atualizar username:", updateError);
-          setUsername(null);
-        } else {
-          console.log("✅ Username atualizado para:", username);
-          setUsername(username);
-          fetchingUserIdRef.current = data.user.id;
-        }
-      } else {
-        console.error("❌ Timeout aguardando perfil ser criado pelo trigger");
+        console.log("✅ Perfil criado com username:", username);
+        setUsername(username);
       }
+    } catch (error) {
+      console.error("❌ Erro no signup:", error);
+      return { error: "Erro ao criar conta" };
     }
-
+    
     return { error: null };
   };
 

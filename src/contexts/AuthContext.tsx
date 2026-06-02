@@ -49,22 +49,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUsername(data.username);
       } else {
         console.log("⚠️ Nenhum username encontrado para este usuário, criando perfil padrão...");
+        // Gerar um username único baseado no userId para evitar conflito de constraint UNIQUE
+        const defaultUsername = `usuario_${userId.substring(0, 8)}`;
+        
         // Se não existir perfil, usar upsert para evitar conflito de chave duplicada
-        // upsert insere se não existir ou ignora se já existir
         const { error: upsertError } = await supabase
           .from("user_profiles")
           .upsert({
             id: userId,
-            username: "usuario",
+            username: defaultUsername,
           }, {
             onConflict: "id", // Se o id já existir, ignora
           });
         
         if (upsertError) {
           console.error("❌ Erro ao criar perfil padrão:", upsertError.message);
+          setUsername(null);
         } else {
-          console.log("✅ Perfil padrão criado/verificado com username: usuario");
-          setUsername("usuario");
+          console.log("✅ Perfil padrão criado/verificado com username:", defaultUsername);
+          setUsername(defaultUsername);
         }
       }
     } catch (error) {
